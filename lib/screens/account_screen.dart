@@ -46,32 +46,54 @@ class _AccountScreenState extends State<AccountScreen> {
   }
 
   Future<void> _logout() async {
-    final user = FirebaseAuth.instance.currentUser;
-    final fcmToken = await FirebaseMessaging.instance.getToken();
+    // quick loader so the user sees feedback
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
 
-    if (user != null && fcmToken != null) {
-      final userDocRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid);
+    try {
+      // ─────────────  iOS  ─────────────
+      if (Platform.isIOS) {
+        await FirebaseAuth.instance.signOut();
+      }
+      // ─────────── Android / others ───────────
+      else {
+        final user = FirebaseAuth.instance.currentUser;
+        final token = await FirebaseMessaging.instance.getToken();
 
-      // Remove the token from fcmTokens array
-      await userDocRef.update({
-        'fcmTokens': FieldValue.arrayRemove([fcmToken]),
-      });
+        if (user != null && token != null) {
+          final ref = FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid);
 
-      print("🧹 Removed FCM token on logout: $fcmToken");
+          try {
+            await ref.update({
+              'fcmTokens': FieldValue.arrayRemove([token]),
+              'fcmToken': FieldValue.delete(), // legacy field
+            });
+          } catch (_) {
+            /* ignore */
+          }
 
-      // Optionally delete the old fcmToken field (if still exists)
-      await userDocRef.update({'fcmToken': FieldValue.delete()});
+          await FirebaseMessaging.instance.deleteToken();
+        }
+
+        await FirebaseAuth.instance.signOut();
+      }
+    } finally {
+      if (mounted) Navigator.of(context).pop(); // close loader
     }
 
-    await FirebaseAuth.instance.signOut();
-
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => SplashScreen()),
-      (route) => false,
-    );
+    // go to splash / login
+    if (mounted) {
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => SplashScreen()),
+        (_) => false,
+      );
+    }
   }
 
   @override
