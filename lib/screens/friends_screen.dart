@@ -1,6 +1,6 @@
 // lib/screens/friends_screen.dart
 //
-// deps: cloud_firestore, firebase_auth, intl, shared_preferences
+// Deps: cloud_firestore, firebase_auth, intl, shared_preferences
 // ChatScreen already exists; group-chat screen still “coming soon”.
 
 import 'dart:async';
@@ -15,36 +15,36 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../screens/chat_screen.dart';
 
-/*────────── firestore field names ──────────*/
+/*──────── Firestore field names ───────*/
 class FriendDoc {
   static const friends = 'friends';
   static const requestsIn = 'requestsIn';
   static const requestsOut = 'requestsOut';
 }
 
-/* safe for hot-restart */
+/*──────── current user id (hot-restart-safe) ───────*/
 final String _me = FirebaseAuth.instance.currentUser?.uid ?? '';
 
-/*──────────────── screen ────────────────*/
+/*──────────────── Screen ───────────────*/
 class FriendsScreen extends StatefulWidget {
   const FriendsScreen({super.key});
   @override
   State<FriendsScreen> createState() => _FriendsScreenState();
 }
 
-/*──────────────── state ────────────────*/
+/*──────────────── State ────────────────*/
 class _FriendsScreenState extends State<FriendsScreen> {
   /* controllers */
   final _searchC = TextEditingController();
 
   /* runtime */
   List<Map<String, dynamic>> _chats = []; // groups + DMs
-  List<Map<String, String>> _friends = []; // {uid,username}
-  List<Map<String, dynamic>> _filter = [];
-  List<Map<String, dynamic>> _remote = [];
+  List<Map<String, String>> _friends = []; // {uid, username}
+  List<Map<String, dynamic>> _filter = []; // local hits
+  List<Map<String, dynamic>> _remote = []; // global hits
 
-  List<String> _reqIn = [];
-  List<String> _reqOut = [];
+  List<String> _reqIn = []; // incoming requests
+  List<String> _reqOut = []; // I sent
   String _query = '';
 
   /* cache */
@@ -54,7 +54,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
   late final StreamSubscription _profileSub;
   late final StreamSubscription _chatSub;
 
-  /*──────── life-cycle ────────*/
+  /*──────────────── life-cycle ───────────────*/
   @override
   void initState() {
     super.initState();
@@ -71,7 +71,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     super.dispose();
   }
 
-  /*──────── profile listener ────────*/
+  /*──────── profile listener ───────*/
   void _listenProfile() {
     _profileSub = FirebaseFirestore.instance
         .collection('users')
@@ -83,6 +83,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
           final inReqs = List<String>.from(d[FriendDoc.requestsIn] ?? []);
           final outReqs = List<String>.from(d[FriendDoc.requestsOut] ?? []);
 
+          /* resolve usernames (tiny fan-out) */
           final List<Map<String, String>> fr = [];
           for (final uid in friends) {
             final u =
@@ -102,11 +103,12 @@ class _FriendsScreenState extends State<FriendsScreen> {
         });
   }
 
-  /*──────── cache ────────*/
+  /*──────── local cache ───────*/
   Future<void> _loadCache() async {
     final sp = await SharedPreferences.getInstance();
     final raw = sp.getString(_kCache);
     if (raw == null) return;
+
     final cached =
         (jsonDecode(raw) as List)
             .cast<Map<String, dynamic>>()
@@ -120,6 +122,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
               },
             )
             .toList();
+
     if (mounted) setState(() => _chats = cached);
   }
 
@@ -140,7 +143,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     );
   }
 
-  /*──────── chats listener (with streak + unread) ────────*/
+  /*──────── chats listener ───────*/
   void _listenChats() {
     _chatSub = FirebaseFirestore.instance
         .collection('chats')
@@ -154,17 +157,16 @@ class _FriendsScreenState extends State<FriendsScreen> {
             final parts = List<String>.from(d['participants']);
             final isGrp = d['isGroup'] == true;
 
-            /* avatar + title + streak */
             late String title;
             late Color avCol;
             late Widget avChild;
-            int streak = 0;
+            int? streak;
 
             if (isGrp) {
               title = d['groupName'] ?? 'Group';
               avCol = Colors.teal.shade100;
               avChild = const Icon(Icons.group, color: Colors.teal);
-              streak = parts.length; // fun little hack
+              streak = null; // no streak for groups
             } else {
               final other = parts.firstWhere(
                 (u) => u != _me,
@@ -184,7 +186,6 @@ class _FriendsScreenState extends State<FriendsScreen> {
               streak = u['currentStreak'] ?? 0;
             }
 
-            /* last-msg & ts */
             final lastSnap =
                 await doc.reference
                     .collection('messages')
@@ -195,7 +196,6 @@ class _FriendsScreenState extends State<FriendsScreen> {
                 lastSnap.docs.isNotEmpty ? lastSnap.docs.first.data() : null;
             final ts = last?['timestamp'] ?? d['lastTs'] as Timestamp?;
 
-            /* unread (skip my own msgs) */
             int unread = 0;
             final others = parts.where((u) => u != _me).toList();
             if (others.length <= 10) {
@@ -218,7 +218,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
               'title': title,
               'avCol': avCol,
               'avChild': avChild,
-              'streak': streak,
+              'streak': streak, // null for groups
               'lastMsg': last?['text'] ?? '',
               'lastTs': ts,
               'unread': unread,
@@ -240,7 +240,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
         });
   }
 
-  /*──────── friend-request helpers ────────*/
+  /*──────── friend-request helpers ───────*/
   Future<void> _sendRequest(String uid) async {
     final you = FirebaseFirestore.instance.collection('users').doc(uid);
     final me = FirebaseFirestore.instance.collection('users').doc(_me);
@@ -266,7 +266,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
       await me.update({
         FriendDoc.requestsOut: FieldValue.arrayUnion([uid]),
       });
-      if (mounted) setState(() => _reqOut.add(uid)); // optimistic UI
+      if (mounted) setState(() => _reqOut.add(uid));
     }
   }
 
@@ -280,7 +280,6 @@ class _FriendsScreenState extends State<FriendsScreen> {
     await me.update({
       FriendDoc.requestsOut: FieldValue.arrayRemove([uid]),
     });
-
     if (mounted) setState(() => _reqOut.remove(uid));
   }
 
@@ -296,9 +295,13 @@ class _FriendsScreenState extends State<FriendsScreen> {
       FriendDoc.requestsOut: FieldValue.arrayRemove([_me]),
       if (accept) FriendDoc.friends: FieldValue.arrayUnion([_me]),
     });
+
+    if (!mounted) return;
+    setState(() => _reqIn.remove(uid));
+    if (_reqIn.isEmpty && Navigator.canPop(context)) Navigator.pop(context);
   }
 
-  /*──────── search / filter ────────*/
+  /*──────── search helpers ───────*/
   void _applyQuery(String q) {
     if (q.isEmpty) {
       setState(() => _filter = _remote = []);
@@ -313,6 +316,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
               ),
             )
             .toList();
+
     if (loc.isNotEmpty) {
       setState(() => _filter = loc);
       _remote = [];
@@ -348,7 +352,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     if (mounted) setState(() => _remote = res);
   }
 
-  /*──────── group-creator sheet ────────*/
+  /*──────── group-creator sheet ───────*/
   void _openGroupCreator() {
     showModalBottomSheet(
       context: context,
@@ -476,13 +480,14 @@ class _FriendsScreenState extends State<FriendsScreen> {
       'isGroup': true,
       'groupName': name,
       'participants': all,
+      'admins': [_me], // you are admin
       'createdAt': Timestamp.now(),
       'lastTs': Timestamp.now(),
       'typing': {for (final u in all) u: false},
     });
   }
 
-  /*──────── navigation helpers ────────*/
+  /*──────── navigation helpers ───────*/
   void _openChatTile(Map<String, dynamic> c) {
     if (c['isGrp'] as bool) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -500,7 +505,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     );
   }
 
-  /*──────── build ────────*/
+  /*──────── build ───────*/
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: const Color(0xFFF6F6F6),
@@ -524,7 +529,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     ),
   );
 
-  /*──────── UI widgets ────────*/
+  /*──────── app-bar ───────*/
   SliverAppBar _appBar() => SliverAppBar(
     pinned: true,
     backgroundColor: Colors.white,
@@ -562,6 +567,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     ],
   );
 
+  /*──────── search bar ───────*/
   Widget _searchField() => TextField(
     controller: _searchC,
     decoration: InputDecoration(
@@ -581,6 +587,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     },
   );
 
+  /*──────── stories ribbon ───────*/
   Widget _storiesRibbon() => SizedBox(
     height: 100,
     child: ListView(
@@ -595,7 +602,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     ),
   );
 
-  Widget _storyTile(String label, IconData? icon, {String? txt}) => Container(
+  Widget _storyTile(String label, IconData? ico, {String? txt}) => Container(
     width: 72,
     margin: const EdgeInsets.only(right: 12),
     child: Column(
@@ -604,8 +611,8 @@ class _FriendsScreenState extends State<FriendsScreen> {
           radius: 28,
           backgroundColor: Colors.deepPurple.shade100,
           child:
-              icon != null
-                  ? Icon(icon, color: Colors.deepPurple)
+              ico != null
+                  ? Icon(ico, color: Colors.deepPurple)
                   : Text(
                     txt!,
                     style: const TextStyle(color: Colors.deepPurple),
@@ -622,7 +629,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     ),
   );
 
-  /*──────── requests sheet ────────*/
+  /*──────── requests sheet ───────*/
   void _showRequestsSheet() {
     showModalBottomSheet(
       context: context,
@@ -648,7 +655,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
                           .collection('users')
                           .doc(uid)
                           .get(),
-                  builder: (c, s) {
+                  builder: (ctx, s) {
                     if (!s.hasData) return const SizedBox.shrink();
                     final uname = s.data!['username'];
                     return Card(
@@ -682,7 +689,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     );
   }
 
-  /*──────── chat list ────────*/
+  /*──────── chat list ───────*/
   SliverList _chatList(List<Map<String, dynamic>> src) => SliverList(
     delegate: SliverChildBuilderDelegate((_, i) {
       if (i == 0)
@@ -701,7 +708,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
         builder:
             (ctx, v, child) => Transform.translate(
               offset: Offset(0, 30 * (1 - v)),
-              child: Opacity(opacity: v.clamp(0.0, 1.0), child: child),
+              child: Opacity(opacity: (v).clamp(0.0, 1.0), child: child),
             ),
         child: _chatTile(c),
       );
@@ -769,24 +776,25 @@ class _FriendsScreenState extends State<FriendsScreen> {
                 style: TextStyle(fontSize: 12, color: Colors.grey[600]),
               ),
               const SizedBox(height: 4),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.local_fire_department,
-                    color: Colors.deepOrange,
-                    size: 18,
-                  ),
-                  const SizedBox(width: 2),
-                  Text(
-                    '${c['streak']}',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
+              if (c['streak'] != null)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.local_fire_department,
+                      color: Colors.deepOrange,
+                      size: 18,
                     ),
-                  ),
-                ],
-              ),
+                    const SizedBox(width: 2),
+                    Text(
+                      '${c['streak']}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
               if (c['unread'] > 0) ...[
                 const SizedBox(height: 6),
                 CircleAvatar(
@@ -805,12 +813,33 @@ class _FriendsScreenState extends State<FriendsScreen> {
     ),
   );
 
-  /*──────── remote list ────────*/
+  /*──────── remote list ───────*/
   SliverList _remoteList() => SliverList(
     delegate: SliverChildBuilderDelegate((_, i) {
       final u = _remote[i];
       final uid = u['uid'] as String;
       final requested = _reqOut.contains(uid);
+      final friend = _friends.any((f) => f['uid'] == uid);
+
+      Widget trailing;
+      if (friend) {
+        trailing = const Chip(
+          label: Text('Friend ✅'),
+          backgroundColor: Color(0xFFEAEAEA),
+        );
+      } else if (requested) {
+        trailing = ElevatedButton(
+          onPressed: () => _cancelRequest(uid),
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
+          child: const Text('Requested'),
+        );
+      } else {
+        trailing = ElevatedButton(
+          onPressed: () => _sendRequest(uid),
+          child: const Text('Add'),
+        );
+      }
+
       return Card(
         margin: const EdgeInsets.fromLTRB(16, 4, 16, 4),
         child: ListTile(
@@ -818,21 +847,14 @@ class _FriendsScreenState extends State<FriendsScreen> {
             child: Text((u['username'] as String)[0].toUpperCase()),
           ),
           title: Text('@${u['username']}'),
-          trailing: ElevatedButton(
-            onPressed:
-                requested ? () => _cancelRequest(uid) : () => _sendRequest(uid),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: requested ? Colors.grey : null,
-            ),
-            child: Text(requested ? 'Requested' : 'Add'),
-          ),
+          trailing: trailing,
         ),
       );
     }, childCount: _remote.length),
   );
 }
 
-/*──────── util ────────*/
+/*──────── util: friendly date label ───────*/
 String _fmt(Timestamp? ts) {
   if (ts == null) return '';
   final d = ts.toDate(), n = DateTime.now();
