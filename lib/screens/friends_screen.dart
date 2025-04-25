@@ -571,7 +571,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
   Widget _searchField() => TextField(
     controller: _searchC,
     decoration: InputDecoration(
-      hintText: 'Search friends / groups / global',
+      hintText: 'Search friends / people',
       prefixIcon: const Icon(Icons.search),
       filled: true,
       fillColor: Colors.white,
@@ -823,9 +823,10 @@ class _FriendsScreenState extends State<FriendsScreen> {
 
       Widget trailing;
       if (friend) {
-        trailing = const Chip(
-          label: Text('Friend ✅'),
-          backgroundColor: Color(0xFFEAEAEA),
+        trailing = IconButton(
+          tooltip: 'Chat',
+          icon: const Icon(Icons.chat_bubble_outline),
+          onPressed: () => _openChat(uid, u['username']),
         );
       } else if (requested) {
         trailing = ElevatedButton(
