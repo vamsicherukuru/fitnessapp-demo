@@ -1,8 +1,7 @@
 // lib/screens/chat_screen.dart
 //
-// Deps: cloud_firestore, firebase_auth, intl
-// (optionally: firebase_messaging somewhere else in the app)
-
+// deps: cloud_firestore, firebase_auth, intl
+// ──────────────────────────────────────────────────────────────
 import 'dart:math' as math;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -10,7 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
-/*──────────────────────────────────────────────────────────────*/
+/*────────────────────────────────── main screen ───────────────────────────*/
 class ChatScreen extends StatefulWidget {
   final String name, uid;
   const ChatScreen({required this.name, required this.uid, Key? key})
@@ -20,22 +19,23 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-/*──────────────────────────────────────────────────────────────*/
+/*──────────────────────────────────────────────────────────────────────────*/
 class _ChatScreenState extends State<ChatScreen> {
-  /* ── core state ── */
-  final String _me = FirebaseAuth.instance.currentUser!.uid;
+  /* core */
+  final _me = FirebaseAuth.instance.currentUser!.uid;
   late final String _chatId;
-
   final _msgC = TextEditingController();
   final _scrollC = ScrollController();
 
-  List<DocumentSnapshot> _cached = []; // for 1st paint before stream
+  /* cache for 1st paint */
+  List<DocumentSnapshot> _cached = [];
+  bool _didInitialJump = false;
 
-  /* extra state (reply / edit banners) */
+  /* banners */
   Map<String, dynamic>? _reply; // {text:, senderId:}
   String? _editingId;
 
-  /*───────────────────────── init / dispose ─────────────────────────*/
+  /* ───────────────────────── lifecycle ───────────────────────── */
   @override
   void initState() {
     super.initState();
@@ -65,32 +65,31 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _cached = snap.docs);
   }
 
-  /*───────────────────────── helpers ─────────────────────────*/
-  void _setTyping(bool isTyping) {
-    FirebaseFirestore.instance.collection('chats').doc(_chatId).set({
-      'typing': {_me: isTyping},
-    }, SetOptions(merge: true));
-  }
+  /* ───────────────────────── helpers ───────────────────────── */
+  void _setTyping(bool v) =>
+      FirebaseFirestore.instance.collection('chats').doc(_chatId).set({
+        'typing': {_me: v},
+      }, SetOptions(merge: true));
 
   void _jumpBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollC.hasClients) _scrollC.jumpTo(0); // list is reversed
+      if (_scrollC.hasClients) _scrollC.jumpTo(0);
     });
   }
 
   String _initials(String n) {
-    final parts = n.trim().split(RegExp(r'\s+'));
-    return parts.length == 1
-        ? parts[0][0].toUpperCase()
-        : (parts[0][0] + parts[1][0]).toUpperCase();
+    final p = n.trim().split(RegExp(r'\s+'));
+    return p.length == 1
+        ? p[0][0].toUpperCase()
+        : (p[0][0] + p[1][0]).toUpperCase();
   }
 
-  /*────────────────────── send / edit / delete ─────────────────────*/
+  /* ─────────────────── send / edit / delete ─────────────────── */
   Future<void> _send() async {
     final txt = _msgC.text.trim();
     if (txt.isEmpty) return;
 
-    /* editing existing message */
+    /* editing existing bubble */
     if (_editingId != null) {
       await FirebaseFirestore.instance
           .collection('chats')
@@ -103,10 +102,10 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
 
-    /* new message */
+    /* new bubble */
     HapticFeedback.mediumImpact();
-
     final chatDoc = FirebaseFirestore.instance.collection('chats').doc(_chatId);
+
     await chatDoc.set({
       'participants': [_me, widget.uid],
       'lastMessage': txt,
@@ -125,17 +124,18 @@ class _ChatScreenState extends State<ChatScreen> {
       if (_reply != null) 'replyTo': _reply,
     });
 
-    setState(() => _reply = null);
     _msgC.clear();
+    setState(() => _reply = null);
     _setTyping(false);
+    _jumpBottom(); // only after *sending*
   }
 
-  Future<void> _deleteMessage(String docId) async {
+  Future<void> _deleteMessage(String id) async {
     await FirebaseFirestore.instance
         .collection('chats')
         .doc(_chatId)
         .collection('messages')
-        .doc(docId)
+        .doc(id)
         .update({
           'type': 'deleted',
           'text': '💬 message deleted',
@@ -143,7 +143,7 @@ class _ChatScreenState extends State<ChatScreen> {
         });
   }
 
-  /*────────────────────────── build ──────────────────────────*/
+  /* ───────────────────────── build ───────────────────────── */
   @override
   Widget build(BuildContext context) {
     final inputBar = _InputBar(
@@ -187,7 +187,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(
         children: [
-          /* ---------------- messages stream ---------------- */
+          /* ───────── messages list ───────── */
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
               stream:
@@ -199,7 +199,12 @@ class _ChatScreenState extends State<ChatScreen> {
                       .snapshots(),
               builder: (_, snap) {
                 final docs = snap.hasData ? snap.data!.docs : _cached;
-                _jumpBottom();
+
+                // initial jump once
+                if (!_didInitialJump && docs.isNotEmpty) {
+                  _didInitialJump = true;
+                  _jumpBottom();
+                }
 
                 return ListView.builder(
                   controller: _scrollC,
@@ -223,14 +228,15 @@ class _ChatScreenState extends State<ChatScreen> {
                       me: me,
                       map: m,
                       onSlideReply:
-                          () => setState(() {
-                            _reply = {
-                              'text': m['text'],
-                              'senderId': m['senderId'],
-                            };
-                          }),
+                          () => setState(
+                            () =>
+                                _reply = {
+                                  'text': m['text'],
+                                  'senderId': m['senderId'],
+                                },
+                          ),
                       onLongPressEditDelete:
-                          me
+                          (me && m['type'] != 'deleted')
                               ? (pos) async {
                                 final sel = await showMenu<String>(
                                   context: context,
@@ -268,7 +274,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
 
-          /* ---------------- typing indicator ---------------- */
+          /* ───────── typing indicator ───────── */
           StreamBuilder<DocumentSnapshot>(
             stream:
                 FirebaseFirestore.instance
@@ -292,7 +298,7 @@ class _ChatScreenState extends State<ChatScreen> {
             },
           ),
 
-          /* ---------------- input bar ---------------- */
+          /* ───────── input bar ───────── */
           inputBar,
         ],
       ),
@@ -300,7 +306,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-/*────────────────────  message-bubble  ───────────────────*/
+/*──────────────────── single bubble ───────────────────*/
 class _MessageBubble extends StatefulWidget {
   const _MessageBubble({
     required this.me,
@@ -320,7 +326,6 @@ class _MessageBubble extends StatefulWidget {
 
 class _MessageBubbleState extends State<_MessageBubble>
     with SingleTickerProviderStateMixin {
-  /* slide-to-reply offset */
   double _dx = 0;
   late final AnimationController _spring = AnimationController(
     vsync: this,
@@ -339,12 +344,11 @@ class _MessageBubbleState extends State<_MessageBubble>
   Widget build(BuildContext context) {
     return GestureDetector(
       onHorizontalDragStart: (_) => _spring.stop(),
-      onHorizontalDragUpdate: (d) {
-        setState(() {
-          _dx += d.delta.dx;
-          _dx = widget.me ? _dx.clamp(-90, 0) : _dx.clamp(0, 90);
-        });
-      },
+      onHorizontalDragUpdate:
+          (d) => setState(() {
+            _dx += d.delta.dx;
+            _dx = widget.me ? _dx.clamp(-90, 0) : _dx.clamp(0, 90);
+          }),
       onHorizontalDragEnd: (_) {
         if (_dx.abs() > 60) widget.onSlideReply();
         _snapBack();
@@ -355,16 +359,15 @@ class _MessageBubbleState extends State<_MessageBubble>
           await widget.onLongPressEditDelete!(details.globalPosition);
         }
       },
-      child: _Slidable(dx: _dx, spring: _spring, child: _buildBubble()),
+      child: _Slidable(dx: _dx, spring: _spring, child: _bubble()),
     );
   }
 
-  Widget _buildBubble() {
+  Widget _bubble() {
     final m = widget.map;
-
-    /* time + (optional) read-tick */
     final ts = m['timestamp'] as Timestamp;
-    final timeReadRow = Row(
+
+    final meta = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(
@@ -383,21 +386,20 @@ class _MessageBubbleState extends State<_MessageBubble>
       ],
     );
 
-    /* main bubble container */
-    final bubble = Column(
+    final bubbleBody = Column(
       crossAxisAlignment:
           widget.me ? CrossAxisAlignment.end : CrossAxisAlignment.start,
       children: [
         if (m['replyTo'] != null) _ReplyPreview(m['replyTo']),
         DecoratedBox(
           decoration: BoxDecoration(
-            border: Border.all(color: Colors.grey.shade300),
             color:
                 m['type'] == 'deleted'
                     ? Colors.grey.shade300
                     : widget.me
                     ? const Color(0xFFD2F5E3)
                     : Colors.white,
+            border: Border.all(color: Colors.grey.shade300),
             borderRadius: BorderRadius.only(
               topLeft: const Radius.circular(18),
               topRight: const Radius.circular(18),
@@ -423,11 +425,10 @@ class _MessageBubbleState extends State<_MessageBubble>
             ),
           ),
         ),
-        timeReadRow,
+        meta,
       ],
     );
 
-    /* fade & slide-in on initial build */
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: 1),
       duration: const Duration(milliseconds: 350),
@@ -440,12 +441,12 @@ class _MessageBubbleState extends State<_MessageBubble>
               child: child,
             ),
           ),
-      child: bubble,
+      child: bubbleBody,
     );
   }
 }
 
-/* small helper that animates the slide-back */
+/* slide-back helper */
 class _Slidable extends StatelessWidget {
   final double dx;
   final AnimationController spring;
@@ -457,16 +458,14 @@ class _Slidable extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: spring,
-      builder:
-          (_, __) => Transform.translate(
-            offset: Offset(dx * (1 - spring.value), 0),
-            child: child,
-          ),
-    );
-  }
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: spring,
+    builder:
+        (_, __) => Transform.translate(
+          offset: Offset(dx * (1 - spring.value), 0),
+          child: child,
+        ),
+  );
 }
 
 /*──────────────────── reply preview ───────────────────*/
@@ -476,7 +475,7 @@ class _ReplyPreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bool me = data['senderId'] == FirebaseAuth.instance.currentUser?.uid;
+    final me = data['senderId'] == FirebaseAuth.instance.currentUser?.uid;
     return Container(
       margin: const EdgeInsets.only(bottom: 4),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -500,49 +499,45 @@ class _Header extends StatelessWidget {
   const _Header({required this.uid, required this.name});
 
   @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<DocumentSnapshot>(
-      stream:
-          FirebaseFirestore.instance.collection('users').doc(uid).snapshots(),
-      builder: (_, snap) {
-        final data = snap.data?.data() as Map<String, dynamic>? ?? {};
-        final online = data['online'] == true;
-        final lastSeen = data['lastSeen'] as Timestamp?;
-        final status =
-            online
-                ? 'Online'
-                : lastSeen != null
-                ? 'Last seen ${DateFormat('h:mm a').format(lastSeen.toDate())}'
-                : 'Offline';
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              name,
-              style: const TextStyle(
-                fontWeight: FontWeight.w600,
-                fontSize: 16,
-                color: Colors.black,
-              ),
+  Widget build(BuildContext context) => StreamBuilder<DocumentSnapshot>(
+    stream: FirebaseFirestore.instance.collection('users').doc(uid).snapshots(),
+    builder: (_, snap) {
+      final d = snap.data?.data() as Map<String, dynamic>? ?? {};
+      final online = d['online'] == true;
+      final lastSeen = d['lastSeen'] as Timestamp?;
+      final status =
+          online
+              ? 'Online'
+              : lastSeen != null
+              ? 'Last seen ${DateFormat('h:mm a').format(lastSeen.toDate())}'
+              : 'Offline';
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            name,
+            style: const TextStyle(
+              fontWeight: FontWeight.w600,
+              fontSize: 16,
+              color: Colors.black,
             ),
-            Text(
-              status,
-              style: TextStyle(
-                fontSize: 12,
-                color: online ? Colors.green : Colors.grey,
-              ),
+          ),
+          Text(
+            status,
+            style: TextStyle(
+              fontSize: 12,
+              color: online ? Colors.green : Colors.grey,
             ),
-          ],
-        );
-      },
-    );
-  }
+          ),
+        ],
+      );
+    },
+  );
 }
 
 /*──────────────────── typing indicator dots ───────────────────*/
 class _Dots extends StatelessWidget {
   const _Dots();
-
   @override
   Widget build(BuildContext context) => Row(
     children: const [
@@ -558,7 +553,6 @@ class _Dots extends StatelessWidget {
 class _Dot extends StatefulWidget {
   final int delay;
   const _Dot(this.delay);
-
   @override
   State<_Dot> createState() => _DotState();
 }
@@ -568,12 +562,10 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
     vsync: this,
     duration: const Duration(milliseconds: 600),
   )..repeat(reverse: true);
-
   late final Animation<double> _a = CurvedAnimation(
     parent: _c,
     curve: Curves.easeInOut,
   );
-
   @override
   void dispose() {
     _c.dispose();
@@ -598,7 +590,7 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
   );
 }
 
-/*──────────────────── input bar  +  banners ───────────────────*/
+/*──────────────────── input bar + Animated banners ───────────────────*/
 class _InputBar extends StatelessWidget {
   const _InputBar({
     required this.controller,
@@ -621,20 +613,29 @@ class _InputBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Column(
     children: [
-      if (reply != null)
-        _Banner(
-          text: reply!['text'],
-          label: 'Reply',
-          colour: Colors.blue,
-          onClose: onCancelReply,
-        ),
-      if (isEditing)
-        _Banner(
-          text: 'Editing message',
-          label: 'Edit',
-          colour: Colors.orange,
-          onClose: onCancelEdit,
-        ),
+      AnimatedSwitcher(
+        duration: const Duration(milliseconds: 200),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        child:
+            reply != null
+                ? _Banner(
+                  key: const ValueKey('reply'),
+                  text: reply!['text'],
+                  label: 'Reply',
+                  colour: Colors.blue,
+                  onClose: onCancelReply,
+                )
+                : isEditing
+                ? _Banner(
+                  key: const ValueKey('edit'),
+                  text: 'Editing message',
+                  label: 'Edit',
+                  colour: Colors.orange,
+                  onClose: onCancelEdit,
+                )
+                : const SizedBox.shrink(key: ValueKey('none')),
+      ),
       Padding(
         padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
         child: DecoratedBox(
@@ -686,11 +687,12 @@ class _InputBar extends StatelessWidget {
 
 class _Banner extends StatelessWidget {
   const _Banner({
+    Key? key,
     required this.text,
     required this.label,
     required this.colour,
     required this.onClose,
-  });
+  }) : super(key: key);
 
   final String text, label;
   final Color colour;
