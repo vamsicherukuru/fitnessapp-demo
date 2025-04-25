@@ -1,338 +1,337 @@
-import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+/// lib/auth/account_creation_screen.dart
+///
+/// Compatible with the *friends / requestsIn / requestsOut* schema.
+/// Deps: firebase_auth, cloud_firestore, firebase_messaging, flutter/material.
+
+import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/material.dart';
 import '../onboarding/welcome_screen.dart';
 import '../screens/home_screen.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'dart:io';
 
 class AccountCreationScreen extends StatefulWidget {
+  const AccountCreationScreen({super.key});
   @override
   State<AccountCreationScreen> createState() => _AccountCreationScreenState();
 }
 
 class _AccountCreationScreenState extends State<AccountCreationScreen>
     with SingleTickerProviderStateMixin {
+  /* ── UI / state ───────────────────────────── */
   bool isSignup = false;
   bool loading = false;
   bool usernameTaken = false;
   bool checkingUsername = false;
   bool isPrivate = false;
 
-  final _usernameController = TextEditingController();
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
+  final _usernameC = TextEditingController();
+  final _emailC = TextEditingController();
+  final _pwC = TextEditingController();
 
-  late AnimationController _fadeController;
-  late Animation<double> _fadeAnimation;
-  Future<void> _registerTokenAfterLogin() async {
-    if (Platform.isIOS) {
-      print("❌ Skipping FCM token registration on iOS (APNs not set)");
-      return;
-    }
+  late final AnimationController _fadeCtrl = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 800),
+  );
+  late final Animation<double> _fadeAnim = CurvedAnimation(
+    parent: _fadeCtrl,
+    curve: Curves.easeInOut,
+  );
 
-    final fcmToken = await FirebaseMessaging.instance.getToken();
-    final currentUser = FirebaseAuth.instance.currentUser;
+  /* ── FCM helper ───────────────────────────── */
+  Future<void> _registerFcmToken() async {
+    if (Platform.isIOS) return; // APNs not set
+    final token = await FirebaseMessaging.instance.getToken();
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null || token == null) return;
 
-    if (currentUser != null && fcmToken != null) {
-      final tokensRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(currentUser.uid);
-
-      final doc = await tokensRef.get();
-      final existingTokens = List<String>.from(doc.data()?['fcmTokens'] ?? []);
-
-      if (!existingTokens.contains(fcmToken)) {
-        existingTokens.add(fcmToken);
-        await tokensRef.set({
-          'fcmTokens': existingTokens,
-        }, SetOptions(merge: true));
-        print("✅ Token added to array!");
-      } else {
-        print("ℹ️ Token already exists in list");
-      }
-    } else {
-      print("❌ Could not get current user or FCM token");
-    }
+    final doc = FirebaseFirestore.instance.collection('users').doc(uid);
+    await doc.set({
+      'fcmTokens': FieldValue.arrayUnion([token]),
+    }, SetOptions(merge: true));
   }
 
-  @override
-  void initState() {
-    super.initState();
-    _fadeController = AnimationController(
-      vsync: this,
-      duration: Duration(milliseconds: 800),
-    );
-    _fadeAnimation = CurvedAnimation(
-      parent: _fadeController,
-      curve: Curves.easeInOut,
-    );
-    _fadeController.forward();
-  }
-
-  @override
-  void dispose() {
-    _fadeController.dispose();
-    super.dispose();
-  }
-
-  void _toggleMode() {
-    setState(() {
-      isSignup = !isSignup;
-      usernameTaken = false;
-      _usernameController.clear();
-      _emailController.clear();
-      _passwordController.clear();
-    });
-  }
-
-  Future<void> _checkUsernameAvailability(String username) async {
-    if (username.length < 6) {
-      setState(() {
-        usernameTaken = true;
-        checkingUsername = false;
-      });
+  /* ── username availability ─────────────────── */
+  Future<void> _checkUsername(String uname) async {
+    if (uname.length < 6) {
+      setState(() => usernameTaken = true);
       return;
     }
     setState(() => checkingUsername = true);
-    final doc =
+    final snap =
         await FirebaseFirestore.instance
             .collection('usernames')
-            .doc(username.trim().toLowerCase().replaceAll("@", ""))
+            .doc(uname.toLowerCase())
             .get();
     setState(() {
-      usernameTaken = doc.exists;
+      usernameTaken = snap.exists;
       checkingUsername = false;
     });
   }
 
+  /* ── create initial user-doc ───────────────── */
+  Future<void> _writeCoreUserDoc({
+    required String uid,
+    required String username,
+    required String email,
+  }) async {
+    await FirebaseFirestore.instance.collection('users').doc(uid).set({
+      'username': username,
+      'email': email,
+      'createdAt': Timestamp.now(),
+      'isPrivate': isPrivate,
+      // NEW schema ↓↓↓
+      'friends': [],
+      'requestsIn': [],
+      'requestsOut': [],
+      // streaks
+      'currentStreak': 0,
+      'longestStreak': 0,
+      // onboarding
+      'onboardingCompleted': false,
+    });
+    // reverse index
+    await FirebaseFirestore.instance.collection('usernames').doc(username).set({
+      'uid': uid,
+      'email': email,
+    });
+  }
+
+  /* ── auth submit ───────────────────────────── */
   Future<void> _submit() async {
-    final username = _usernameController.text.trim().toLowerCase().replaceAll(
-      "@",
-      "",
-    );
-    final password = _passwordController.text.trim();
-    final email = _emailController.text.trim();
+    final uname = _usernameC.text.trim().toLowerCase().replaceAll('@', '');
+    final pw = _pwC.text.trim();
+    final mail = _emailC.text.trim();
+
+    if (isSignup && (uname.length < 6 || usernameTaken)) {
+      _toast('Pick an available username (≥ 6 chars)');
+      return;
+    }
+    if (pw.length < 6) {
+      _toast('Password must be ≥ 6 characters');
+      return;
+    }
 
     setState(() => loading = true);
 
     try {
       if (isSignup) {
-        if (username.isEmpty || username.length < 6 || usernameTaken) {
-          _showError("Username must be at least 6 characters and available");
-          return;
-        }
-
-        final credential = await FirebaseAuth.instance
-            .createUserWithEmailAndPassword(email: email, password: password);
-
-        final uid = credential.user!.uid;
-
-        await FirebaseFirestore.instance.collection('users').doc(uid).set({
-          'username': username,
-          'email': email,
-          'createdAt': Timestamp.now(),
-          'followers': [],
-          'following': [],
-          'followRequests': [],
-          'isPrivate': isPrivate,
-          'onboardingCompleted': false,
-          'currentStreak': 0,
-          'longestStreak': 0,
-        });
-        await _registerTokenAfterLogin();
-        await FirebaseFirestore.instance
-            .collection('usernames')
-            .doc(username)
-            .set({'uid': uid, 'email': email});
-
+        final cred = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+          email: mail,
+          password: pw,
+        );
+        await _writeCoreUserDoc(
+          uid: cred.user!.uid,
+          username: uname,
+          email: mail,
+        );
+        await _registerFcmToken();
+        if (!mounted) return;
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => WelcomeScreen()),
         );
       } else {
-        final snapshot =
+        // login: resolve username → email
+        final snap =
             await FirebaseFirestore.instance
                 .collection('usernames')
-                .doc(username)
+                .doc(uname)
                 .get();
-
-        if (!snapshot.exists || snapshot.data()?['email'] == null) {
-          _showError("Username not found");
+        if (!snap.exists) {
+          _toast('Username not found');
           return;
         }
-
-        final userEmail = snapshot.data()!['email'] as String;
-
-        final credential = await FirebaseAuth.instance
-            .signInWithEmailAndPassword(email: userEmail, password: password);
-        await _registerTokenAfterLogin();
-        final doc =
+        final userEmail = snap['email'] as String;
+        final cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
+          email: userEmail,
+          password: pw,
+        );
+        await _registerFcmToken();
+        final userDoc =
             await FirebaseFirestore.instance
                 .collection('users')
-                .doc(credential.user!.uid)
+                .doc(cred.user!.uid)
                 .get();
-
-        if (doc.exists && doc.data()?['onboardingCompleted'] == true) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (_) => HomeScreen()),
-          );
-        } else {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (_) => WelcomeScreen()),
-          );
-        }
+        final onboardingDone = userDoc.data()?['onboardingCompleted'] == true;
+        if (!mounted) return;
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => onboardingDone ? HomeScreen() : WelcomeScreen(),
+          ),
+        );
       }
     } catch (e) {
-      _showError("Auth failed: ${e.toString()}");
+      _toast('Auth failed: $e');
     }
 
-    setState(() => loading = false);
+    if (mounted) setState(() => loading = false);
   }
 
-  void _resetPassword() async {
-    final username = _usernameController.text.trim().toLowerCase().replaceAll(
-      "@",
-      "",
-    );
-    if (username.isEmpty) {
-      _showError("Enter your username to reset password");
-      return;
-    }
+  /* ── utils ─────────────────────────────────── */
+  void _toast(String msg) =>
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
 
-    final doc =
-        await FirebaseFirestore.instance
-            .collection('usernames')
-            .doc(username)
-            .get();
-
-    if (!doc.exists) {
-      _showError("Username not found");
-      return;
-    }
-
-    final email = doc.data()?['email'];
-    await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
-    _showError("Password reset email sent to $email");
-  }
-
-  void _showError(String message) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+  /* ── UI ────────────────────────────────────── */
+  @override
+  void initState() {
+    super.initState();
+    _fadeCtrl.forward();
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        centerTitle: true,
-        title: FadeTransition(
-          opacity: _fadeAnimation,
-          child: Text(
-            "Hanumode",
-            style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
-          ),
+  void dispose() {
+    _fadeCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: Colors.white,
+    appBar: AppBar(
+      title: FadeTransition(
+        opacity: _fadeAnim,
+        child: const Text(
+          'Hanumode',
+          style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
         ),
       ),
-      body: Center(
-        child: FadeTransition(
-          opacity: _fadeAnimation,
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  isSignup ? "Create Account" : "Login",
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+      centerTitle: true,
+      elevation: 0,
+      backgroundColor: Colors.white,
+    ),
+    body: Center(
+      child: FadeTransition(
+        opacity: _fadeAnim,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                isSignup ? 'Create Account' : 'Login',
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
                 ),
-                const SizedBox(height: 20),
-                TextField(
-                  controller: _usernameController,
-                  decoration: InputDecoration(
-                    labelText: isSignup ? "Choose Username" : "Username",
-                    prefixText: "@",
-                    suffixIcon:
-                        isSignup
-                            ? (checkingUsername
-                                ? CircularProgressIndicator(strokeWidth: 2)
-                                : usernameTaken
-                                ? Icon(Icons.close, color: Colors.red)
-                                : Icon(Icons.check, color: Colors.green))
-                            : null,
-                  ),
-                  onChanged: (val) {
-                    if (isSignup && val.length >= 3) {
-                      _checkUsernameAvailability(val);
-                    }
-                  },
+              ),
+              const SizedBox(height: 20),
+
+              // username
+              TextField(
+                controller: _usernameC,
+                decoration: InputDecoration(
+                  labelText: isSignup ? 'Choose Username' : 'Username',
+                  prefixText: '@',
+                  suffixIcon:
+                      isSignup
+                          ? (checkingUsername
+                              ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                              : Icon(
+                                usernameTaken ? Icons.close : Icons.check,
+                                color:
+                                    usernameTaken ? Colors.red : Colors.green,
+                              ))
+                          : null,
                 ),
-                if (isSignup) ...[
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _emailController,
-                    decoration: InputDecoration(labelText: "Email"),
-                    keyboardType: TextInputType.emailAddress,
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Checkbox(
-                        value: isPrivate,
-                        onChanged: (val) => setState(() => isPrivate = val!),
-                      ),
-                      Expanded(
-                        child: Text(
-                          "Private Account (needs approval to follow)",
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+                onChanged: (v) {
+                  if (isSignup && v.length >= 3) _checkUsername(v);
+                },
+              ),
+
+              if (isSignup) ...[
                 const SizedBox(height: 12),
                 TextField(
-                  controller: _passwordController,
-                  decoration: InputDecoration(labelText: "Password"),
-                  obscureText: true,
+                  controller: _emailC,
+                  decoration: const InputDecoration(labelText: 'Email'),
+                  keyboardType: TextInputType.emailAddress,
                 ),
-                if (!isSignup)
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton(
-                      onPressed: _resetPassword,
-                      child: Text("Forgot Password?"),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Checkbox(
+                      value: isPrivate,
+                      onChanged: (v) => setState(() => isPrivate = v!),
                     ),
-                  ),
-                const SizedBox(height: 20),
-                loading
-                    ? CircularProgressIndicator()
-                    : ElevatedButton(
-                      onPressed: _submit,
-                      style: ElevatedButton.styleFrom(
-                        minimumSize: Size(double.infinity, 50),
-                        backgroundColor: Colors.deepOrange,
-                      ),
-                      child: Text(isSignup ? "Sign Up" : "Login"),
+                    const Expanded(
+                      child: Text('Private account (needs approval to add)'),
                     ),
-                TextButton(
-                  onPressed: _toggleMode,
-                  child: Text(
-                    isSignup
-                        ? "Already have an account? Login"
-                        : "New here? Create account",
-                  ),
+                  ],
                 ),
               ],
-            ),
+
+              const SizedBox(height: 12),
+              TextField(
+                controller: _pwC,
+                decoration: const InputDecoration(labelText: 'Password'),
+                obscureText: true,
+              ),
+
+              if (!isSignup)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () async {
+                      final uname = _usernameC.text
+                          .trim()
+                          .toLowerCase()
+                          .replaceAll('@', '');
+                      if (uname.isEmpty) {
+                        _toast('Enter username first');
+                        return;
+                      }
+                      final snap =
+                          await FirebaseFirestore.instance
+                              .collection('usernames')
+                              .doc(uname)
+                              .get();
+                      if (!snap.exists) {
+                        _toast('Username not found');
+                        return;
+                      }
+                      await FirebaseAuth.instance.sendPasswordResetEmail(
+                        email: snap['email'],
+                      );
+                      _toast('Password reset email sent');
+                    },
+                    child: const Text('Forgot password?'),
+                  ),
+                ),
+
+              const SizedBox(height: 20),
+              loading
+                  ? const CircularProgressIndicator()
+                  : ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(50),
+                      backgroundColor: Colors.deepOrange,
+                    ),
+                    onPressed: _submit,
+                    child: Text(isSignup ? 'Sign Up' : 'Login'),
+                  ),
+
+              TextButton(
+                onPressed: () {
+                  setState(() => isSignup = !isSignup);
+                },
+                child: Text(
+                  isSignup
+                      ? 'Already have an account? Login'
+                      : 'New here? Create account',
+                ),
+              ),
+            ],
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
 }

@@ -1,7 +1,7 @@
 // lib/screens/friends_screen.dart
 //
 // deps: cloud_firestore, firebase_auth, intl, shared_preferences
-// ChatScreen already exists; Group-chat screen still “coming soon”.
+// ChatScreen already exists; group-chat screen still “coming soon”.
 
 import 'dart:async';
 import 'dart:convert';
@@ -13,7 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'chat_screen.dart';
+import '../screens/chat_screen.dart';
 
 /*────────── firestore field names ──────────*/
 class FriendDoc {
@@ -22,7 +22,7 @@ class FriendDoc {
   static const requestsOut = 'requestsOut';
 }
 
-/* current uid (safe for hot-reload) */
+/* safe for hot-restart */
 final String _me = FirebaseAuth.instance.currentUser?.uid ?? '';
 
 /*──────────────── screen ────────────────*/
@@ -39,12 +39,12 @@ class _FriendsScreenState extends State<FriendsScreen> {
 
   /* runtime */
   List<Map<String, dynamic>> _chats = []; // groups + DMs
-  List<Map<String, String>> _friends = []; // {uid, username}
-  List<Map<String, dynamic>> _filter = []; // local hits
-  List<Map<String, dynamic>> _remote = []; // global hits
+  List<Map<String, String>> _friends = []; // {uid,username}
+  List<Map<String, dynamic>> _filter = [];
+  List<Map<String, dynamic>> _remote = [];
 
-  List<String> _reqIn = []; // pending -> me
-  List<String> _reqOut = []; // I sent
+  List<String> _reqIn = [];
+  List<String> _reqOut = [];
   String _query = '';
 
   /* cache */
@@ -140,7 +140,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     );
   }
 
-  /*──────── chats listener ────────*/
+  /*──────── chats listener (with streak + unread) ────────*/
   void _listenChats() {
     _chatSub = FirebaseFirestore.instance
         .collection('chats')
@@ -154,15 +154,17 @@ class _FriendsScreenState extends State<FriendsScreen> {
             final parts = List<String>.from(d['participants']);
             final isGrp = d['isGroup'] == true;
 
-            /* avatar + title */
+            /* avatar + title + streak */
             late String title;
             late Color avCol;
             late Widget avChild;
+            int streak = 0;
 
             if (isGrp) {
               title = d['groupName'] ?? 'Group';
               avCol = Colors.teal.shade100;
               avChild = const Icon(Icons.group, color: Colors.teal);
+              streak = parts.length; // fun little hack
             } else {
               final other = parts.firstWhere(
                 (u) => u != _me,
@@ -179,9 +181,10 @@ class _FriendsScreenState extends State<FriendsScreen> {
                 title[0].toUpperCase(),
                 style: const TextStyle(color: Colors.deepPurple),
               );
+              streak = u['currentStreak'] ?? 0;
             }
 
-            /* last-msg */
+            /* last-msg & ts */
             final lastSnap =
                 await doc.reference
                     .collection('messages')
@@ -190,6 +193,20 @@ class _FriendsScreenState extends State<FriendsScreen> {
                     .get();
             final last =
                 lastSnap.docs.isNotEmpty ? lastSnap.docs.first.data() : null;
+            final ts = last?['timestamp'] ?? d['lastTs'] as Timestamp?;
+
+            /* unread (skip my own msgs) */
+            int unread = 0;
+            final others = parts.where((u) => u != _me).toList();
+            if (others.length <= 10) {
+              unread =
+                  (await doc.reference
+                          .collection('messages')
+                          .where('senderId', whereIn: others)
+                          .where('read', isEqualTo: false)
+                          .get())
+                      .size;
+            }
 
             list.add({
               'chatId': doc.id,
@@ -201,9 +218,10 @@ class _FriendsScreenState extends State<FriendsScreen> {
               'title': title,
               'avCol': avCol,
               'avChild': avChild,
+              'streak': streak,
               'lastMsg': last?['text'] ?? '',
-              'lastTs': last?['timestamp'] ?? d['lastTs'] as Timestamp?,
-              'unread': 0,
+              'lastTs': ts,
+              'unread': unread,
             });
           }
 
@@ -232,7 +250,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
     );
 
     if (youOut.contains(_me)) {
-      // they already asked => auto-friend
+      // cross-request → auto-friend
       await you.update({
         FriendDoc.requestsOut: FieldValue.arrayRemove([_me]),
         FriendDoc.friends: FieldValue.arrayUnion([_me]),
@@ -248,7 +266,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
       await me.update({
         FriendDoc.requestsOut: FieldValue.arrayUnion([uid]),
       });
-      if (mounted) setState(() => _reqOut.add(uid)); // optimistic toggle
+      if (mounted) setState(() => _reqOut.add(uid)); // optimistic UI
     }
   }
 
@@ -305,7 +323,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
   }
 
   Future<void> _runRemoteSearch(String q) async {
-    final List<Map<String, dynamic>> res = [];
+    final res = <Map<String, dynamic>>[];
     final snap =
         await FirebaseFirestore.instance
             .collection('usernames')
@@ -721,21 +739,66 @@ class _FriendsScreenState extends State<FriendsScreen> {
               children: [
                 Text(
                   c['isGrp'] ? c['title'] : '@${c['title']}',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight:
+                        c['unread'] > 0 ? FontWeight.w900 : FontWeight.w600,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   c['lastMsg'],
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 13, color: Colors.grey),
+                  style: TextStyle(
+                    fontSize: 13,
+                    color:
+                        c['unread'] > 0 ? Colors.deepOrange : Colors.grey[700],
+                    fontWeight:
+                        c['unread'] > 0 ? FontWeight.bold : FontWeight.normal,
+                  ),
                 ),
               ],
             ),
           ),
-          Text(
-            _fmt(c['lastTs'] as Timestamp?),
-            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                _fmt(c['lastTs'] as Timestamp?),
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.local_fire_department,
+                    color: Colors.deepOrange,
+                    size: 18,
+                  ),
+                  const SizedBox(width: 2),
+                  Text(
+                    '${c['streak']}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+              if (c['unread'] > 0) ...[
+                const SizedBox(height: 6),
+                CircleAvatar(
+                  radius: 10,
+                  backgroundColor: Colors.deepOrange,
+                  child: Text(
+                    '${c['unread']}',
+                    style: const TextStyle(fontSize: 11, color: Colors.white),
+                  ),
+                ),
+              ],
+            ],
           ),
         ],
       ),
