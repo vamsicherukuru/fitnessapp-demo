@@ -10,6 +10,7 @@ import 'dart:math' as math;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:hanumode/screens/group_chat_screen.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -490,8 +491,10 @@ class _FriendsScreenState extends State<FriendsScreen> {
   /*──────── navigation helpers ───────*/
   void _openChatTile(Map<String, dynamic> c) {
     if (c['isGrp'] as bool) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Group chat screen coming soon!')),
+      // 👉 open the brand-new group chat
+      _openGroupChat(
+        chatId: c['chatId'] as String,
+        groupName: c['title'] as String,
       );
     } else {
       _openChat(c['uid'] as String, c['title'] as String);
@@ -502,6 +505,15 @@ class _FriendsScreenState extends State<FriendsScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => ChatScreen(name: uname, uid: uid)),
+    );
+  }
+
+  void _openGroupChat({required String chatId, required String groupName}) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GroupChatScreen(chatId: chatId, name: groupName),
+      ),
     );
   }
 
@@ -518,7 +530,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
             child: _searchField(),
           ),
         ),
-        SliverToBoxAdapter(child: _storiesRibbon()),
+        // SliverToBoxAdapter(child: _storiesRibbon()),
         if (_filter.isNotEmpty)
           _chatList(_filter)
         else if (_remote.isNotEmpty)
@@ -587,47 +599,47 @@ class _FriendsScreenState extends State<FriendsScreen> {
     },
   );
 
-  /*──────── stories ribbon ───────*/
-  Widget _storiesRibbon() => SizedBox(
-    height: 100,
-    child: ListView(
-      padding: const EdgeInsets.only(left: 16),
-      scrollDirection: Axis.horizontal,
-      children: [
-        _storyTile('You', Icons.account_circle),
-        ..._friends.map(
-          (f) => _storyTile('@${f['username']}', null, txt: f['username']![0]),
-        ),
-      ],
-    ),
-  );
+  // /*──────── stories ribbon ───────*/
+  // Widget _storiesRibbon() => SizedBox(
+  //   height: 100,
+  //   child: ListView(
+  //     padding: const EdgeInsets.only(left: 16),
+  //     scrollDirection: Axis.horizontal,
+  //     children: [
+  //       _storyTile('You', Icons.account_circle),
+  //       ..._friends.map(
+  //         (f) => _storyTile('@${f['username']}', null, txt: f['username']![0]),
+  //       ),
+  //     ],
+  //   ),
+  // );
 
-  Widget _storyTile(String label, IconData? ico, {String? txt}) => Container(
-    width: 72,
-    margin: const EdgeInsets.only(right: 12),
-    child: Column(
-      children: [
-        CircleAvatar(
-          radius: 28,
-          backgroundColor: Colors.deepPurple.shade100,
-          child:
-              ico != null
-                  ? Icon(ico, color: Colors.deepPurple)
-                  : Text(
-                    txt!,
-                    style: const TextStyle(color: Colors.deepPurple),
-                  ),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 11),
-        ),
-      ],
-    ),
-  );
+  // Widget _storyTile(String label, IconData? ico, {String? txt}) => Container(
+  //   width: 72,
+  //   margin: const EdgeInsets.only(right: 12),
+  //   child: Column(
+  //     children: [
+  //       CircleAvatar(
+  //         radius: 28,
+  //         backgroundColor: Colors.deepPurple.shade100,
+  //         child:
+  //             ico != null
+  //                 ? Icon(ico, color: Colors.deepPurple)
+  //                 : Text(
+  //                   txt!,
+  //                   style: const TextStyle(color: Colors.deepPurple),
+  //                 ),
+  //       ),
+  //       const SizedBox(height: 6),
+  //       Text(
+  //         label,
+  //         maxLines: 1,
+  //         overflow: TextOverflow.ellipsis,
+  //         style: const TextStyle(fontSize: 11),
+  //       ),
+  //     ],
+  //   ),
+  // );
 
   /*──────── requests sheet ───────*/
   void _showRequestsSheet() {
