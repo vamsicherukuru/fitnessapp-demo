@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "987994002525",
+    "project_id": "hanumode-demo",
+    "storage_bucket": "hanumode-demo.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:987994002525:android:0ab50c12885294b13229b4",
+        "android_client_info": {
+          "package_name": "com.example.hanumode"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCYn0o-SnHykKvRdO1tsDPLuIiaR48bhhs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
