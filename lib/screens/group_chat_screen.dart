@@ -6,13 +6,15 @@ import 'dart:math' as math;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+
+import 'group_info_screen.dart';
+import 'chat_screen.dart'; // for 1-to-1 fall-back chat
 
 /*────────────────── group chat screen ──────────────────*/
 class GroupChatScreen extends StatefulWidget {
-  final String chatId; // chats/<id>
-  final String name; // group name
+  final String chatId; // document id inside `chats`
+  final String name; // pretty name shown in friends screen
 
   const GroupChatScreen({Key? key, required this.chatId, required this.name})
     : super(key: key);
@@ -26,20 +28,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   /* basics */
   final _me = FirebaseAuth.instance.currentUser!.uid;
   final _msgC = TextEditingController();
-  final _scrollC = ScrollController();
+  final _scroll = ScrollController();
 
-  /* once  */
-  bool _didInitialJump = false;
+  /* once */
+  bool _didJump = false;
   List<DocumentSnapshot> _cached = [];
 
-  /* banners / edit */
-  Map<String, dynamic>? _reply;
+  /* banners / editing / reply */
+  Map<String, dynamic>? _reply; // carries text + senderId + senderName
   String? _editingId;
 
-  /* tiny user cache */
+  /* minimal user-info cache */
   final _uCache = <String, Map<String, dynamic>>{};
 
-  /* state */
+  /* header state */
   bool _amAdmin = false;
   List<String> _participants = [];
 
@@ -56,7 +58,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     super.dispose();
   }
 
-  /*──────── prime first 40 msgs for cold-start ────────*/
+  /*──────── first 40 messages into RAM (cold-start) ─────*/
   Future<void> _primeCache() async {
     final snap =
         await FirebaseFirestore.instance
@@ -69,37 +71,38 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     setState(() => _cached = snap.docs);
   }
 
-  /*──────── listen admins / participants ─────────────*/
+  /*──────── header listener → admin & participants ─────*/
   void _listenHeader() {
     FirebaseFirestore.instance
         .collection('chats')
         .doc(widget.chatId)
         .snapshots()
-        .listen((d) {
-          final m = d.data() ?? {};
-          final admins = List<String>.from(m['admins'] ?? []);
-          final participants = List<String>.from(m['participants'] ?? []);
+        .listen((doc) {
+          final d = doc.data() ?? {};
+          final adm = List<String>.from(d['admins'] ?? []);
+          final par = List<String>.from(d['participants'] ?? []);
+          final creator = d['creatorId'] as String?; // ← may exist
+
           if (mounted) {
             setState(() {
-              _amAdmin = admins.contains(_me);
-              _participants = participants;
+              _amAdmin = adm.contains(_me) || creator == _me;
+              _participants = par;
             });
           }
         });
   }
 
-  /*──────── helpers ─────────────*/
+  /*──────── helpers ────────*/
   void _jumpBottom() => WidgetsBinding.instance.addPostFrameCallback((_) {
-    if (_scrollC.hasClients) _scrollC.jumpTo(0);
+    if (_scroll.hasClients) _scroll.jumpTo(0);
   });
 
-  Future<Map<String, dynamic>> _getUser(String uid) async {
+  Future<Map<String, dynamic>> _user(String uid) async {
     if (_uCache.containsKey(uid)) return _uCache[uid]!;
     final d =
         (await FirebaseFirestore.instance.collection('users').doc(uid).get())
             .data()!;
-    _uCache[uid] = d;
-    return d;
+    return _uCache[uid] = d;
   }
 
   String _initials(String n) {
@@ -109,42 +112,42 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         : (p[0][0] + p[1][0]).toUpperCase();
   }
 
-  /* nice pastel colour based on uid */
-  Color _colourFor(String uid) {
+  Color _pastel(String uid) {
+    // stable but unique colour
     final h = uid.codeUnits.fold<int>(0, (p, c) => p + c);
-    final hue = (h * 37) % 360; // pseudo-random but stable
-    return HSLColor.fromAHSL(1, hue.toDouble(), 0.45, 0.75).toColor();
+    final hue = (h * 37) % 360;
+    return HSLColor.fromAHSL(1, hue.toDouble(), .45, .75).toColor();
   }
 
-  /*──────── send / edit / delete ─────────────*/
+  /*──────── send / edit / delete ────────*/
   Future<void> _send() async {
     final txt = _msgC.text.trim();
     if (txt.isEmpty) return;
 
-    /* edit */
+    final chat = FirebaseFirestore.instance
+        .collection('chats')
+        .doc(widget.chatId);
+
+    /* edit mode ---------------------------------------------------------*/
     if (_editingId != null) {
-      await FirebaseFirestore.instance
-          .collection('chats')
-          .doc(widget.chatId)
-          .collection('messages')
-          .doc(_editingId!)
-          .update({'text': txt, 'edited': true, 'editedAt': Timestamp.now()});
+      await chat.collection('messages').doc(_editingId!).update({
+        'text': txt,
+        'edited': true,
+        'editedAt': Timestamp.now(),
+      });
       setState(() => _editingId = null);
       _msgC.clear();
       return;
     }
 
-    final chatDoc = FirebaseFirestore.instance
-        .collection('chats')
-        .doc(widget.chatId);
-
-    await chatDoc.set({
+    /* brand-new bubble --------------------------------------------------*/
+    await chat.set({
       'lastMessage': txt,
       'lastSenderId': _me,
       'lastTimestamp': Timestamp.now(),
     }, SetOptions(merge: true));
 
-    await chatDoc.collection('messages').add({
+    await chat.collection('messages').add({
       'senderId': _me,
       'text': txt,
       'timestamp': Timestamp.now(),
@@ -157,7 +160,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _jumpBottom();
   }
 
-  Future<void> _deleteMessage(String id) async {
+  Future<void> _delete(String id) async {
     await FirebaseFirestore.instance
         .collection('chats')
         .doc(widget.chatId)
@@ -170,7 +173,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         });
   }
 
-  /*──────── Add-members sheet ─────────────*/
+  /*──────── add-members bottom-sheet (only admins) ─────*/
   void _openAddMembers() {
     showModalBottomSheet(
       context: context,
@@ -188,13 +191,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   .collection('users')
                   .doc(_me)
                   .get();
+
           final friends = List<String>.from(meDoc['friends'] ?? []);
           final remaining =
               friends.where((f) => !_participants.contains(f)).toList();
 
-          final List<Map<String, dynamic>> out = [];
+          final out = <Map<String, dynamic>>[];
           for (final uid in remaining) {
-            final u = await _getUser(uid);
+            final u = await _user(uid);
             out.add({'uid': uid, 'username': u['username']});
           }
           return out;
@@ -283,10 +287,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                 pick.isEmpty
                                     ? null
                                     : () async {
-                                      /* update participants + typing map */
                                       final chat = FirebaseFirestore.instance
                                           .collection('chats')
                                           .doc(widget.chatId);
+
+                                      // 1️⃣  add participants + typing map
                                       await chat.update({
                                         'participants': FieldValue.arrayUnion(
                                           pick.toList(),
@@ -296,21 +301,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                         },
                                       });
 
-                                      /* system message */
+                                      // 2️⃣  drop system message
                                       final names = await Future.wait(
                                         pick.map(
                                           (uid) async =>
-                                              (await _getUser(uid))['username'],
+                                              (await _user(uid))['username'],
                                         ),
                                       );
                                       final actor =
-                                          (await _getUser(_me))['username'];
-                                      final txt =
-                                          '$actor added ${names.join(', ')}';
-
+                                          (await _user(_me))['username']
+                                              as String;
                                       await chat.collection('messages').add({
                                         'type': 'system',
-                                        'text': txt,
+                                        'text':
+                                            '$actor added ${names.join(', ')}',
                                         'timestamp': Timestamp.now(),
                                       });
 
@@ -329,7 +333,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
-  /*──────── build ─────────────*/
+  /*──────── navigation helpers ─────*/
+  void _openGroupInfo() => Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (_) => GroupInfoScreen(chatId: widget.chatId, name: widget.name),
+    ),
+  );
+
+  /*──────── build ────────*/
   @override
   Widget build(BuildContext context) {
     final inputBar = _InputBar(
@@ -352,23 +364,28 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         foregroundColor: Colors.black,
         elevation: 0,
         titleSpacing: 0,
-        title: Row(
-          children: [
-            const CircleAvatar(
-              radius: 20,
-              backgroundColor: Color(0xFFB2DFDB),
-              child: Icon(Icons.group, color: Colors.teal),
-            ),
-            const SizedBox(width: 10),
-            Text(
-              widget.name,
-              style: const TextStyle(
-                fontWeight: FontWeight.w600,
-                fontSize: 16,
-                color: Colors.black,
+        title: InkWell(
+          // ← tap anywhere on the header
+          onTap: _openGroupInfo,
+          borderRadius: BorderRadius.circular(6),
+          child: Row(
+            children: [
+              const CircleAvatar(
+                radius: 20,
+                backgroundColor: Color(0xFFB2DFDB),
+                child: Icon(Icons.group, color: Colors.teal),
               ),
-            ),
-          ],
+              const SizedBox(width: 10),
+              Text(
+                widget.name,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 16,
+                  color: Colors.black,
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           if (_amAdmin)
@@ -394,13 +411,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               builder: (_, snap) {
                 final docs = snap.hasData ? snap.data!.docs : _cached;
 
-                if (!_didInitialJump && docs.isNotEmpty) {
-                  _didInitialJump = true;
+                if (!_didJump && docs.isNotEmpty) {
+                  _didJump = true;
                   _jumpBottom();
                 }
 
                 return ListView.builder(
-                  controller: _scrollC,
+                  controller: _scroll,
                   reverse: true,
                   padding: const EdgeInsets.symmetric(
                     horizontal: 16,
@@ -411,12 +428,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     final id = docs[i].id;
                     final m = docs[i].data()! as Map<String, dynamic>;
                     final me = m['senderId'] == _me;
-                    final type = m['type'] ?? 'text';
 
-                    if (type == 'system') return _SystemStrip(text: m['text']);
+                    if ((m['type'] ?? 'text') == 'system') {
+                      return _SystemStrip(text: m['text']);
+                    }
 
                     return FutureBuilder<Map<String, dynamic>>(
-                      future: me ? Future.value({}) : _getUser(m['senderId']),
+                      future: me ? Future.value({}) : _user(m['senderId']),
                       builder: (_, usnap) {
                         final user = usnap.data ?? {};
                         return _GroupBubble(
@@ -424,7 +442,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                           me: me,
                           map: m,
                           name: user['username'] ?? '',
-                          colour: _colourFor(m['senderId']),
+                          colour: _pastel(m['senderId']),
                           initials:
                               me ? '' : _initials(user['username'] ?? '?'),
                           onSlideReply:
@@ -437,7 +455,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                     },
                               ),
                           onLongPressEditDelete:
-                              me && type != 'deleted'
+                              me && m['type'] != 'deleted'
                                   ? (pos) async {
                                     final sel = await showMenu<String>(
                                       context: context,
@@ -464,7 +482,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                         _msgC.text = m['text'];
                                       });
                                     } else if (sel == 'del') {
-                                      _deleteMessage(id);
+                                      _delete(id);
                                     }
                                   }
                                   : null,
@@ -476,7 +494,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               },
             ),
           ),
-
           /*──────── input bar ────────*/
           inputBar,
         ],
@@ -485,7 +502,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 }
 
-/*────────────────── centred grey strip ───────────────*/
+/*──────────────── centred grey strip ───────────────*/
 class _SystemStrip extends StatelessWidget {
   final String text;
   const _SystemStrip({required this.text});
@@ -510,7 +527,7 @@ class _SystemStrip extends StatelessWidget {
   );
 }
 
-/*────────────────── one bubble ───────────────────────*/
+/*──────────────── one bubble ───────────────────────*/
 class _GroupBubble extends StatefulWidget {
   const _GroupBubble({
     required this.id,
@@ -560,17 +577,34 @@ class _GroupBubbleState extends State<_GroupBubble>
     final type = m['type'] ?? 'text';
     final me = widget.me;
 
-    final meta = Text(
-      _fmt(ts),
-      style: const TextStyle(fontSize: 10, color: Colors.grey),
+    /* small reply-banner (now with sender name) */
+    Widget _replyBanner(Map<String, dynamic> r) => Container(
+      margin: const EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.blue.shade100,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            r['senderName'] ?? '',
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: Colors.black87,
+            ),
+          ),
+          Text(
+            r['text'],
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12, color: Colors.black54),
+          ),
+        ],
+      ),
     );
-
-    final bubbleColour =
-        type == 'deleted'
-            ? Colors.grey.shade300
-            : me
-            ? const Color(0xFFD2F5E3)
-            : Colors.white;
 
     final bubble = Column(
       crossAxisAlignment:
@@ -599,24 +633,15 @@ class _GroupBubbleState extends State<_GroupBubble>
           ),
           const SizedBox(height: 4),
         ],
-        if (m['replyTo'] != null)
-          Container(
-            margin: const EdgeInsets.only(bottom: 4),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.blue.shade100,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Text(
-              m['replyTo']['text'],
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
-            ),
-          ),
+        if (m['replyTo'] != null) _replyBanner(m['replyTo']),
         DecoratedBox(
           decoration: BoxDecoration(
-            color: bubbleColour,
+            color:
+                type == 'deleted'
+                    ? Colors.grey.shade300
+                    : me
+                    ? const Color(0xFFD2F5E3)
+                    : Colors.white,
             border: Border.all(color: Colors.grey.shade300),
             borderRadius: BorderRadius.only(
               topLeft: const Radius.circular(18),
@@ -638,7 +663,10 @@ class _GroupBubbleState extends State<_GroupBubble>
             ),
           ),
         ),
-        meta,
+        Text(
+          _fmt(ts),
+          style: const TextStyle(fontSize: 10, color: Colors.grey),
+        ),
       ],
     );
 
@@ -671,7 +699,7 @@ class _GroupBubbleState extends State<_GroupBubble>
   }
 }
 
-/*──────── fancy entrance (slide + scale + fade) ───────*/
+/*──────── entrance tween (slide+scale+fade) ─────*/
 class _Entrance extends StatelessWidget {
   final bool fromRight;
   final Widget child;
@@ -684,7 +712,7 @@ class _Entrance extends StatelessWidget {
     curve: Curves.easeOutBack,
     builder:
         (_, v, c) => Opacity(
-          opacity: v.clamp(0.0, 1.0), // ← add clamp here
+          opacity: v.clamp(0.0, 1.0),
           child: Transform.translate(
             offset: Offset((fromRight ? 1 : -1) * 40 * (1 - v), 0),
             child: Transform.scale(scale: .8 + .2 * v, child: c),
@@ -694,7 +722,7 @@ class _Entrance extends StatelessWidget {
   );
 }
 
-/*──────── input bar (banner + field) ───────*/
+/*──────── input bar (banner + field) ─────*/
 class _InputBar extends StatelessWidget {
   const _InputBar({
     required this.controller,
@@ -722,7 +750,7 @@ class _InputBar extends StatelessWidget {
                 ? _Banner(
                   key: const ValueKey('reply'),
                   text: reply!['text'],
-                  label: 'Reply → ${reply!['senderName'] ?? ''}',
+                  label: 'Reply ↩︎ ${reply!['senderName'] ?? ''}',
                   colour: Colors.blue,
                   onClose: onCancelReply,
                 )
